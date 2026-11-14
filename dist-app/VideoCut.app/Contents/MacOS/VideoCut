@@ -1,0 +1,52 @@
+#!/bin/bash
+# VideoCut 启动脚本：启动本地服务器并打开浏览器
+
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+RESOURCES="${APP_DIR}/Resources"
+PORT=8899
+
+# 查找 node 可执行文件
+NODE_BIN=""
+for candidate in node /usr/local/bin/node /opt/homebrew/bin/node /usr/bin/node "$HOME/.nvm/versions/node"/*/bin/node "$HOME/.fnm/aliases/default/bin/node" "$HOME/.volta/bin/node"; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    NODE_BIN="$(command -v "$candidate")"
+    break
+  fi
+done
+
+if [ -z "$NODE_BIN" ]; then
+  osascript -e 'display dialog "未检测到 Node.js，请先安装 Node.js 后再运行 VideoCut。" buttons {"确定"} default button 1 with icon stop' 2>/dev/null
+  exit 1
+fi
+
+# 查找可用端口
+while lsof -nP -iTCP:${PORT} -sTCP:LISTEN >/dev/null 2>&1; do
+  PORT=$((PORT + 1))
+done
+
+# 启动服务器
+"$NODE_BIN" "${RESOURCES}/server.cjs" "$PORT" "${RESOURCES}" &
+SERVER_PID=$!
+
+# 等待服务器就绪（最多 10 秒）
+READY_URL=""
+for i in $(seq 1 50); do
+  READY_URL=$(lsof -nP -iTCP:${PORT} -sTCP:LISTEN >/dev/null 2>&1 && echo "http://127.0.0.1:${PORT}" || echo "")
+  if [ -n "$READY_URL" ]; then
+    break
+  fi
+  sleep 0.2
+done
+
+if [ -z "$READY_URL" ]; then
+  kill "$SERVER_PID" 2>/dev/null
+  osascript -e 'display dialog "服务器启动失败，请重试。" buttons {"确定"} default button 1 with icon stop' 2>/dev/null
+  exit 1
+fi
+
+# 打开默认浏览器
+open "$READY_URL"
+
+# 保持运行，直到进程被终止
+wait "$SERVER_PID" 2>/dev/null
+exit 0
