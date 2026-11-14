@@ -37,6 +37,28 @@ export async function trimMP4Lossless(
 
         // 收集每个轨道需要保留的样本范围
         const trackInfos: TrackInfo[] = [];
+
+        // 先确定视频轨道的关键帧对齐起点，所有轨道以此为基准保持音视频同步
+        const videoTrack = tracks.find((t) => t.type === "video");
+        let alignedStartTime = startTime;
+        if (videoTrack) {
+          const videoSamples = mp4boxFile.getTrackSamplesInfo(videoTrack.id);
+          if (videoSamples && videoSamples.length > 0) {
+            let minDist = Infinity;
+            let videoStartSample = 0;
+            for (const s of videoSamples) {
+              if (!s.is_sync) continue;
+              const t = s.dts / videoTrack.timescale;
+              const dist = Math.abs(t - startTime);
+              if (dist <= minDist) {
+                minDist = dist;
+                videoStartSample = s.number;
+              }
+            }
+            alignedStartTime = videoSamples[videoStartSample].dts / videoTrack.timescale;
+          }
+        }
+
         for (const trak of traks) {
           const track = tracks.find((t) => t.id === trak.tkhd.track_id);
           if (!track) continue;
@@ -44,23 +66,36 @@ export async function trimMP4Lossless(
           const samples = mp4boxFile.getTrackSamplesInfo(track.id);
           if (!samples || samples.length === 0) continue;
 
-          // 找到起始关键帧（<= startTime）和结束样本（>= endTime）
+          const isVideo = track.type === "video";
+
+          // 起点：视频轨道必须是关键帧，其他轨道对齐到视频起点时间
           let startSample = 0;
+          let startMinDist = Infinity;
           for (const s of samples) {
+            if (isVideo && !s.is_sync) continue;
             const t = s.dts / track.timescale;
-            if (t <= startTime && s.is_sync) {
+            const dist = Math.abs(t - alignedStartTime);
+            if (dist <= startMinDist) {
+              startMinDist = dist;
               startSample = s.number;
             }
-            if (t > startTime) break;
           }
 
+          // 终点：对齐到 endTime（所有轨道独立取最近样本，误差在一帧以内）
           let endSample = samples[samples.length - 1].number;
+          let endMinDist = Infinity;
           for (const s of samples) {
             const t = s.dts / track.timescale;
-            if (t >= endTime) {
+            const dist = Math.abs(t - endTime);
+            if (dist < endMinDist) {
+              endMinDist = dist;
               endSample = s.number;
-              break;
             }
+          }
+
+          // 安全校验：确保 start <= end
+          if (startSample > endSample) {
+            startSample = endSample;
           }
 
           trackInfos.push({ trak, startSample, endSample, samples, timescale: track.timescale });
